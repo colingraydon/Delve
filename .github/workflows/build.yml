@@ -12,9 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build
+      - name: Build and Test
         run: |
-          xcodebuild build \
+          xcodebuild test \
             -project Delve.xcodeproj \
             -scheme Delve \
             -destination 'platform=macOS' \
