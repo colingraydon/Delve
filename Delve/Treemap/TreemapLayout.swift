@@ -1,83 +1,101 @@
 import CoreGraphics
 
-struct LayoutConstants {
+enum LayoutConstants {
+    /// Children smaller than this fraction of the parent are merged into a
+    /// single "smaller items" tile instead of being shown individually.
     static let minTileFraction: Double = 0.02
-    static let minTileSize: CGFloat = 5
-    static let maxDepth: Int = 3
+    /// Tiles smaller than this (points, either dimension) are not drawn.
+    static let minTileSize: CGFloat = 4
 }
 
 struct TileRect {
-    let node: FileNode
+    enum Content {
+        case node(FileNode)
+        case aggregate(count: Int, totalSize: Int64)
+    }
+
     let frame: CGRect
-    let depth: Int
+    let content: Content
+
+    var totalSize: Int64 {
+        switch content {
+        case .node(let node): return node.totalSize
+        case .aggregate(_, let size): return size
+        }
+    }
+
+    var name: String {
+        switch content {
+        case .node(let node): return node.name
+        case .aggregate(let count, _): return "\(count) smaller item\(count == 1 ? "" : "s")"
+        }
+    }
+
+    var isDirectory: Bool {
+        switch content {
+        case .node(let node): return node.isDirectory
+        case .aggregate: return false
+        }
+    }
+
+    /// Stable identity for hover tracking. At most one aggregate exists per level.
+    var id: AnyHashable {
+        switch content {
+        case .node(let node): return node.id
+        case .aggregate: return "aggregate"
+        }
+    }
 }
 
+/// Squarified treemap layout, single level: lays out the direct children of a
+/// node as tiles filling the rect, with aspect ratios kept close to square.
 struct TreemapLayout {
-    static func layout(root: FileNode, in rect: CGRect) -> [TileRect] {
-        guard root.totalSize > 0 else { return [] }
-        var results: [TileRect] = []
-        layoutChildren(of: root, in: rect, depth: 0, results: &results)
-        return results
+    private struct Item {
+        let size: Int64
+        let content: TileRect.Content
     }
 
-    private static func layoutChildren(
-        of node: FileNode,
-        in rect: CGRect,
-        depth: Int,
-        results: inout [TileRect]
-    ) {
-        guard depth < LayoutConstants.maxDepth else { return }
+    static func layout(root: FileNode, in rect: CGRect) -> [TileRect] {
+        guard root.totalSize > 0, rect.width > 0, rect.height > 0 else { return [] }
 
-        let eligible = node.children.filter { child in
-            guard node.totalSize > 0 else { return false }
-            let fraction = Double(child.totalSize) / Double(node.totalSize)
-            return fraction >= LayoutConstants.minTileFraction
-        }
+        let threshold = Double(root.totalSize) * LayoutConstants.minTileFraction
+        var big: [Item] = []
+        var smallCount = 0
+        var smallTotal: Int64 = 0
 
-        guard !eligible.isEmpty else { return }
-
-        // Normalize to the sum of *displayed* nodes so tiles fill the rect.
-        // Filtered-out small children simply have their space redistributed.
-        let eligibleSize = eligible.reduce(0) { $0 + $1.totalSize }
-        let tiles = squarify(nodes: eligible, totalSize: eligibleSize, in: rect, depth: depth)
-
-        for tile in tiles {
-            guard tile.frame.width >= LayoutConstants.minTileSize,
-                  tile.frame.height >= LayoutConstants.minTileSize else { continue }
-
-            results.append(tile)
-
-            if tile.node.isDirectory && !tile.node.children.isEmpty {
-                layoutChildren(of: tile.node, in: tile.frame, depth: depth + 1, results: &results)
+        for child in root.children where child.totalSize > 0 {
+            if Double(child.totalSize) >= threshold {
+                big.append(Item(size: child.totalSize, content: .node(child)))
+            } else {
+                smallCount += 1
+                smallTotal += child.totalSize
             }
         }
-    }
 
-    // Squarified treemap algorithm: lays out nodes as rectangles with
-    // aspect ratios as close to square as possible.
-    private static func squarify(nodes: [FileNode], totalSize: Int64, in rect: CGRect, depth: Int) -> [TileRect] {
-        let sorted = nodes.sorted { $0.totalSize > $1.totalSize }
+        big.sort { $0.size > $1.size }
+
+        var items = big
+        if smallCount > 0 {
+            items.append(Item(size: smallTotal, content: .aggregate(count: smallCount, totalSize: smallTotal)))
+        }
+
+        guard !items.isEmpty else { return [] }
+
+        let total = items.reduce(0) { $0 + $1.size }
         var results: [TileRect] = []
-        squarifyRow(nodes: sorted, totalSize: totalSize, rect: rect, depth: depth, results: &results)
+        squarifyRow(items: items, totalSize: total, rect: rect, results: &results)
         return results
     }
 
-    private static func squarifyRow(
-        nodes: [FileNode],
-        totalSize: Int64,
-        rect: CGRect,
-        depth: Int,
-        results: inout [TileRect]
-    ) {
-        guard !nodes.isEmpty, totalSize > 0, rect.width > 0, rect.height > 0 else { return }
+    private static func squarifyRow(items: [Item], totalSize: Int64, rect: CGRect, results: inout [TileRect]) {
+        guard !items.isEmpty, totalSize > 0, rect.width > 0, rect.height > 0 else { return }
 
-        var row: [FileNode] = []
-        var remaining = nodes
+        var row: [Item] = []
+        var remaining = items
 
         while !remaining.isEmpty {
             let candidate = remaining[0]
             let newRow = row + [candidate]
-
             if row.isEmpty || worstAspectRatio(newRow, totalSize: totalSize, rect: rect) <=
                 worstAspectRatio(row, totalSize: totalSize, rect: rect) {
                 row.append(candidate)
@@ -87,68 +105,47 @@ struct TreemapLayout {
             }
         }
 
-        let leftoverRect = layoutRow(row, totalSize: totalSize, rect: rect, depth: depth, results: &results)
+        let leftover = layoutRow(row, totalSize: totalSize, rect: rect, results: &results)
 
         if !remaining.isEmpty {
-            let remainingSize = remaining.reduce(0) { $0 + $1.totalSize }
-            squarifyRow(nodes: remaining, totalSize: remainingSize, rect: leftoverRect, depth: depth, results: &results)
+            let remainingSize = remaining.reduce(0) { $0 + $1.size }
+            squarifyRow(items: remaining, totalSize: remainingSize, rect: leftover, results: &results)
         }
     }
 
-    private static func layoutRow(
-        _ row: [FileNode],
-        totalSize: Int64,
-        rect: CGRect,
-        depth: Int,
-        results: inout [TileRect]
-    ) -> CGRect {
-        let rowSize = row.reduce(0) { $0 + $1.totalSize }
+    private static func layoutRow(_ row: [Item], totalSize: Int64, rect: CGRect, results: inout [TileRect]) -> CGRect {
+        let rowSize = row.reduce(0) { $0 + $1.size }
         let rowFraction = Double(rowSize) / Double(totalSize)
         let isHorizontal = rect.width >= rect.height
 
         var offset: CGFloat = 0
-        let rowLength: CGFloat = isHorizontal ? rect.width * CGFloat(rowFraction) : rect.height * CGFloat(rowFraction)
-        let stripLength: CGFloat = isHorizontal ? rect.height : rect.width
+        let rowLength = isHorizontal ? rect.width * CGFloat(rowFraction) : rect.height * CGFloat(rowFraction)
+        let stripLength = isHorizontal ? rect.height : rect.width
 
-        for node in row {
-            let nodeFraction = Double(node.totalSize) / Double(rowSize)
-            let nodeLength = stripLength * CGFloat(nodeFraction)
-
+        for item in row {
+            let itemFraction = Double(item.size) / Double(rowSize)
+            let itemLength = stripLength * CGFloat(itemFraction)
             let frame: CGRect
             if isHorizontal {
-                frame = CGRect(x: rect.minX, y: rect.minY + offset, width: rowLength, height: nodeLength)
+                frame = CGRect(x: rect.minX, y: rect.minY + offset, width: rowLength, height: itemLength)
             } else {
-                frame = CGRect(x: rect.minX + offset, y: rect.minY, width: nodeLength, height: rowLength)
+                frame = CGRect(x: rect.minX + offset, y: rect.minY, width: itemLength, height: rowLength)
             }
-            offset += nodeLength
-
-            results.append(TileRect(node: node, frame: frame, depth: depth))
+            offset += itemLength
+            results.append(TileRect(frame: frame, content: item.content))
         }
 
-        let leftover: CGRect
         if isHorizontal {
-            leftover = CGRect(
-                x: rect.minX + rowLength,
-                y: rect.minY,
-                width: rect.width - rowLength,
-                height: rect.height
-            )
+            return CGRect(x: rect.minX + rowLength, y: rect.minY, width: rect.width - rowLength, height: rect.height)
         } else {
-            leftover = CGRect(
-                x: rect.minX,
-                y: rect.minY + rowLength,
-                width: rect.width,
-                height: rect.height - rowLength
-            )
+            return CGRect(x: rect.minX, y: rect.minY + rowLength, width: rect.width, height: rect.height - rowLength)
         }
-
-        return leftover
     }
 
-    private static func worstAspectRatio(_ row: [FileNode], totalSize: Int64, rect: CGRect) -> Double {
+    private static func worstAspectRatio(_ row: [Item], totalSize: Int64, rect: CGRect) -> Double {
         guard !row.isEmpty, totalSize > 0 else { return .infinity }
 
-        let rowSize = row.reduce(0) { $0 + $1.totalSize }
+        let rowSize = row.reduce(0) { $0 + $1.size }
         let rowFraction = Double(rowSize) / Double(totalSize)
         let isHorizontal = rect.width >= rect.height
         let stripLength = Double(isHorizontal ? rect.height : rect.width)
@@ -156,11 +153,11 @@ struct TreemapLayout {
 
         guard rowThickness > 0 else { return .infinity }
 
-        return row.map { node -> Double in
-            let nodeFraction = Double(node.totalSize) / Double(rowSize)
-            let nodeLength = stripLength * nodeFraction
-            let w = max(rowThickness, nodeLength)
-            let h = min(rowThickness, nodeLength)
+        return row.map { item -> Double in
+            let itemFraction = Double(item.size) / Double(rowSize)
+            let itemLength = stripLength * itemFraction
+            let w = max(rowThickness, itemLength)
+            let h = min(rowThickness, itemLength)
             return h > 0 ? w / h : .infinity
         }.max() ?? .infinity
     }

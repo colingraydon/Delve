@@ -7,8 +7,14 @@ final class TreemapLayoutTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeNode(name: String, size: Int64, children: [FileNode] = []) -> FileNode {
-        let node = FileNode(url: URL(fileURLWithPath: "/\(name)"), name: name, isDirectory: !children.isEmpty, isPackage: false, ownSize: size)
+    private func leaf(_ name: String, _ size: Int64) -> FileNode {
+        FileNode(url: URL(fileURLWithPath: "/\(name)"), name: name,
+                 isDirectory: false, isPackage: false, ownSize: size)
+    }
+
+    private func dir(_ name: String, _ children: [FileNode]) -> FileNode {
+        let node = FileNode(url: URL(fileURLWithPath: "/\(name)"), name: name,
+                            isDirectory: true, isPackage: false, ownSize: 0)
         for child in children {
             child.parent = node
             node.children.append(child)
@@ -17,12 +23,25 @@ final class TreemapLayoutTests: XCTestCase {
         return node
     }
 
-    // MARK: - Tests
+    private func names(_ tiles: [TileRect]) -> [String] { tiles.map(\.name) }
+
+    // MARK: - Single-level behavior
+
+    func testLaysOutOnlyDirectChildren() {
+        let subdir = dir("sub", [leaf("grandchild", 500)])
+        let sibling = leaf("sibling", 500)
+        let root = dir("root", [subdir, sibling])
+
+        let tiles = TreemapLayout.layout(root: root, in: canvas)
+
+        XCTAssertEqual(tiles.count, 2)
+        XCTAssertTrue(names(tiles).contains("sub"))
+        XCTAssertTrue(names(tiles).contains("sibling"))
+        XCTAssertFalse(names(tiles).contains("grandchild")) // grandchildren not rendered
+    }
 
     func testSingleChildFillsCanvas() {
-        let child = makeNode(name: "file.txt", size: 1000)
-        let root = makeNode(name: "root", size: 0, children: [child])
-
+        let root = dir("root", [leaf("only.txt", 1000)])
         let tiles = TreemapLayout.layout(root: root, in: canvas)
 
         XCTAssertEqual(tiles.count, 1)
@@ -31,89 +50,92 @@ final class TreemapLayoutTests: XCTestCase {
     }
 
     func testTotalAreaEqualsCanvas() {
-        let children = (1...5).map { makeNode(name: "file\($0).txt", size: Int64($0 * 100)) }
-        let root = makeNode(name: "root", size: 0, children: children)
+        let children = (1...5).map { leaf("file\($0)", Int64($0 * 100)) }
+        let root = dir("root", children)
 
         let tiles = TreemapLayout.layout(root: root, in: canvas)
-        let totalArea = tiles.filter { $0.depth == 0 }.reduce(0.0) { $0 + $1.frame.width * $1.frame.height }
-        let canvasArea = canvas.width * canvas.height
+        let area = tiles.reduce(0.0) { $0 + $1.frame.width * $1.frame.height }
 
-        XCTAssertEqual(Double(totalArea), Double(canvasArea), accuracy: 1.0)
+        XCTAssertEqual(Double(area), Double(canvas.width * canvas.height), accuracy: 1.0)
     }
 
-    func testNoOverlappingTilesAtSameDepth() {
-        let children = (1...6).map { makeNode(name: "file\($0).txt", size: Int64($0 * 200)) }
-        let root = makeNode(name: "root", size: 0, children: children)
+    func testNoOverlappingTiles() {
+        let children = (1...6).map { leaf("file\($0)", Int64($0 * 200)) }
+        let root = dir("root", children)
 
-        let tiles = TreemapLayout.layout(root: root, in: canvas).filter { $0.depth == 0 }
-
+        let tiles = TreemapLayout.layout(root: root, in: canvas)
         for i in 0..<tiles.count {
             for j in (i + 1)..<tiles.count {
                 let intersection = tiles[i].frame.intersection(tiles[j].frame)
-                let area = intersection.width * intersection.height
-                XCTAssertLessThan(area, 1.0, "Tiles \(i) and \(j) overlap")
+                let overlapArea = intersection.width * intersection.height
+                XCTAssertLessThan(overlapArea, 1.0, "Tiles \(i) and \(j) overlap")
             }
         }
     }
 
-    func testSmallChildrenBelowFractionAreExcluded() {
-        let big = makeNode(name: "big.txt", size: 10000)
-        let tiny = makeNode(name: "tiny.txt", size: 1)
-        let root = makeNode(name: "root", size: 0, children: [big, tiny])
-
-        let tiles = TreemapLayout.layout(root: root, in: canvas)
-        let names = tiles.map(\.node.name)
-
-        XCTAssertTrue(names.contains("big.txt"))
-        XCTAssertFalse(names.contains("tiny.txt"))
-    }
-
-    func testFilteredChildrenStillFillCanvas() {
-        // One big child plus many tiny ones that fall below the 2% threshold.
-        // The displayed tiles should still fill the entire canvas — the filtered
-        // children's space gets redistributed, not left as a gap.
-        var children = [makeNode(name: "big.txt", size: 10000)]
-        children += (1...20).map { makeNode(name: "tiny\($0).txt", size: 100) }
-        let root = makeNode(name: "root", size: 0, children: children)
-
-        let tiles = TreemapLayout.layout(root: root, in: canvas)
-        let topLevel = tiles.filter { $0.depth == 0 }
-        let totalArea = topLevel.reduce(0.0) { $0 + $1.frame.width * $1.frame.height }
-
-        XCTAssertEqual(topLevel.count, 1) // only the big one survives the filter
-        XCTAssertEqual(Double(totalArea), Double(canvas.width * canvas.height), accuracy: 1.0)
-    }
-
-    func testEmptyRootProducesNoTiles() {
-        let root = makeNode(name: "root", size: 0)
-        let tiles = TreemapLayout.layout(root: root, in: canvas)
-        XCTAssertTrue(tiles.isEmpty)
-    }
-
-    func testDepthLimitIsRespected() {
-        // Build a tree deeper than maxDepth
-        var deepChild = makeNode(name: "leaf", size: 1000)
-        for i in 0..<LayoutConstants.maxDepth + 2 {
-            deepChild = makeNode(name: "dir\(i)", size: 0, children: [deepChild])
-        }
-
-        let tiles = TreemapLayout.layout(root: deepChild, in: canvas)
-        let maxObservedDepth = tiles.map(\.depth).max() ?? 0
-
-        XCTAssertLessThanOrEqual(maxObservedDepth, LayoutConstants.maxDepth)
-    }
-
     func testTilesStayWithinCanvas() {
-        let children = (1...8).map { makeNode(name: "file\($0).txt", size: Int64($0 * 150)) }
-        let root = makeNode(name: "root", size: 0, children: children)
+        let children = (1...8).map { leaf("file\($0)", Int64($0 * 150)) }
+        let root = dir("root", children)
 
         let tiles = TreemapLayout.layout(root: root, in: canvas)
-
         for tile in tiles {
             XCTAssertGreaterThanOrEqual(tile.frame.minX, canvas.minX - 1)
             XCTAssertGreaterThanOrEqual(tile.frame.minY, canvas.minY - 1)
             XCTAssertLessThanOrEqual(tile.frame.maxX, canvas.maxX + 1)
             XCTAssertLessThanOrEqual(tile.frame.maxY, canvas.maxY + 1)
         }
+    }
+
+    func testEmptyRootProducesNoTiles() {
+        let root = dir("root", [])
+        XCTAssertTrue(TreemapLayout.layout(root: root, in: canvas).isEmpty)
+    }
+
+    // MARK: - Aggregate "smaller items" bucket
+
+    func testSmallChildrenAreBucketed() {
+        var children = [leaf("big", 10000)]
+        children += (1...20).map { leaf("tiny\($0)", 100) } // each 100/12000 ≈ 0.8% < 2%
+        let root = dir("root", children)
+
+        let tiles = TreemapLayout.layout(root: root, in: canvas)
+
+        // one big tile + one aggregate tile
+        XCTAssertEqual(tiles.count, 2)
+
+        let aggregate = tiles.first { if case .aggregate = $0.content { return true } else { return false } }
+        XCTAssertNotNil(aggregate)
+        if case .aggregate(let count, let size) = aggregate?.content {
+            XCTAssertEqual(count, 20)
+            XCTAssertEqual(size, 2000)
+        }
+    }
+
+    func testBucketedLayoutStillFillsCanvas() {
+        var children = [leaf("big", 10000)]
+        children += (1...20).map { leaf("tiny\($0)", 100) }
+        let root = dir("root", children)
+
+        let tiles = TreemapLayout.layout(root: root, in: canvas)
+        let area = tiles.reduce(0.0) { $0 + $1.frame.width * $1.frame.height }
+
+        XCTAssertEqual(Double(area), Double(canvas.width * canvas.height), accuracy: 1.0)
+    }
+
+    func testNoBucketWhenAllChildrenAreLargeEnough() {
+        let children = (1...3).map { leaf("file\($0)", 1000) }
+        let root = dir("root", children)
+
+        let tiles = TreemapLayout.layout(root: root, in: canvas)
+        XCTAssertEqual(tiles.count, 3)
+        XCTAssertFalse(tiles.contains { if case .aggregate = $0.content { return true } else { return false } })
+    }
+
+    func testZeroSizedChildrenAreIgnored() {
+        let root = dir("root", [leaf("real", 1000), leaf("empty", 0)])
+        let tiles = TreemapLayout.layout(root: root, in: canvas)
+
+        XCTAssertEqual(tiles.count, 1)
+        XCTAssertEqual(tiles[0].name, "real")
     }
 }

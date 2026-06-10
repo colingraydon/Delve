@@ -20,4 +20,16 @@ final class FileNode: Identifiable, @unchecked Sendable {
         self.totalSize = ownSize
         self.children = []
     }
+
+    /// The chain of nodes from the tree's root down to (and including) this node,
+    /// built by walking `parent` pointers. Used for breadcrumb navigation.
+    nonisolated var pathFromRoot: [FileNode] {
+        var chain: [FileNode] = []
+        var node: FileNode? = self
+        while let current = node {
+            chain.append(current)
+            node = current.parent
+        }
+        return chain.reversed()
+    }
 }
