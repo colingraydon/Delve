@@ -121,6 +121,41 @@ final class DirectoryScannerTests: XCTestCase {
         XCTAssertGreaterThan(appNode?.ownSize ?? 0, 0)
     }
 
+    func testRootNameOverrideRenamesTopNodeAndKeepsChildrenLinked() async throws {
+        try Data(repeating: 0, count: 256).write(to: tempDir.appendingPathComponent("a.txt"))
+
+        let scanner = DirectoryScanner()
+        let root = try await scanner.scan(url: tempDir, rootName: "Macintosh HD")
+
+        XCTAssertEqual(root.name, "Macintosh HD")
+        XCTAssertEqual(root.totalSize, 256)
+        XCTAssertTrue(root.children.allSatisfy { $0.parent === root })
+    }
+
+    func testSkipPathsExcludesSubtree() async throws {
+        let keep = tempDir.appendingPathComponent("keep")
+        let skip = tempDir.appendingPathComponent("skip")
+        try FileManager.default.createDirectory(at: keep, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: skip, withIntermediateDirectories: true)
+        try Data(repeating: 0, count: 100).write(to: keep.appendingPathComponent("kept.txt"))
+        try Data(repeating: 0, count: 999).write(to: skip.appendingPathComponent("ignored.txt"))
+
+        let scanner = DirectoryScanner()
+        let root = try await scanner.scan(url: tempDir, skipping: [skip.standardizedFileURL.path])
+
+        XCTAssertEqual(root.children.map(\.name), ["keep"])
+        XCTAssertEqual(root.totalSize, 100)
+    }
+
+    func testSystemSkipPathsOnlyApplyToTheStartupDisk() {
+        XCTAssertEqual(
+            DirectoryScanner.systemSkipPaths(forScanRoot: URL(fileURLWithPath: "/")),
+            ["/Volumes", "/System/Volumes"]
+        )
+        XCTAssertTrue(DirectoryScanner.systemSkipPaths(forScanRoot: URL(fileURLWithPath: "/Volumes/Backup")).isEmpty)
+        XCTAssertTrue(DirectoryScanner.systemSkipPaths(forScanRoot: tempDir).isEmpty)
+    }
+
     func testLargeTreeAggregatesCorrectly() async throws {
         let subCount = 10
         let fileSize = 128

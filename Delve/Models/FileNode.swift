@@ -21,6 +21,19 @@ final class FileNode: Identifiable, @unchecked Sendable {
         self.children = []
     }
 
+    /// Detaches this node from the tree and subtracts its size from every
+    /// ancestor. Used after the file is moved to the Trash.
+    nonisolated func removeFromParent() {
+        guard let parent else { return }
+        parent.children.removeAll { $0 === self }
+        var ancestor: FileNode? = parent
+        while let node = ancestor {
+            node.totalSize -= totalSize
+            ancestor = node.parent
+        }
+        self.parent = nil
+    }
+
     /// The chain of nodes from the tree's root down to (and including) this node,
     /// built by walking `parent` pointers. Used for breadcrumb navigation.
     nonisolated var pathFromRoot: [FileNode] {

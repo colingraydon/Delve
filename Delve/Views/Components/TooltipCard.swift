@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A reusable floating card — a rounded, bordered, shadowed container that
+/// A reusable floating card - a rounded, bordered, shadowed container that
 /// wraps arbitrary content. Use for tooltips, hover details, small popovers.
 struct TooltipCard<Content: View>: View {
     @ViewBuilder var content: Content

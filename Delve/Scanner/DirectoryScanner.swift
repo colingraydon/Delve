@@ -8,15 +8,47 @@ enum ScanError: Error {
 struct DirectoryScanner {
     nonisolated init() {}
 
-    func scan(url: URL, progress: (@Sendable (Int) -> Void)? = nil) async throws -> FileNode {
-        try await Task.detached(priority: .userInitiated) {
+    /// Paths to exclude when scanning a given root. Scanning "/" must skip
+    /// other mounted disks and the APFS volume group mounts - /System/Volumes
+    /// re-exposes the Data volume whose contents already appear at /Users,
+    /// /Applications, etc. via firmlinks, so descending into it would count
+    /// everything twice.
+    nonisolated static func systemSkipPaths(forScanRoot url: URL) -> Set<String> {
+        url.standardizedFileURL.path == "/" ? ["/Volumes", "/System/Volumes"] : []
+    }
+
+    func scan(
+        url: URL,
+        rootName: String? = nil,
+        skipping skipPaths: Set<String> = [],
+        progress: (@Sendable (Int) -> Void)? = nil
+    ) async throws -> FileNode {
+        // Detached so the blocking filesystem walk stays off the cooperative
+        // pool; cancellation is forwarded by hand since detachment severs it.
+        let task = Task.detached(priority: .userInitiated) {
             var fileCount = 0
-            return try Self.scanRecursive(url: url, fileCount: &fileCount, progress: progress)
-        }.value
+            let root = try Self.scanRecursive(url: url, skipPaths: skipPaths,
+                                              fileCount: &fileCount, progress: progress)
+            guard let rootName, rootName != root.name else { return root }
+            // Volume roots scan as "/" - rebuild the top node under its
+            // display name ("Macintosh HD") so breadcrumbs read naturally.
+            let renamed = FileNode(url: root.url, name: rootName, isDirectory: root.isDirectory,
+                                   isPackage: root.isPackage, ownSize: root.ownSize)
+            renamed.totalSize = root.totalSize
+            renamed.children = root.children
+            for child in renamed.children { child.parent = renamed }
+            return renamed
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private nonisolated static func scanRecursive(
         url: URL,
+        skipPaths: Set<String>,
         fileCount: inout Int,
         progress: (@Sendable (Int) -> Void)?
     ) throws -> FileNode {
@@ -52,7 +84,10 @@ struct DirectoryScanner {
 
         if !isDirectory {
             fileCount += 1
-            if fileCount % 100 == 0 { progress?(fileCount) }
+            if fileCount % 100 == 0 {
+                try Task.checkCancellation()
+                progress?(fileCount)
+            }
             return FileNode(
                 url: url,
                 name: name,
@@ -71,7 +106,11 @@ struct DirectoryScanner {
         )
 
         for childURL in contents {
-            guard let child = try? scanRecursive(url: childURL, fileCount: &fileCount, progress: progress) else {
+            if !skipPaths.isEmpty && skipPaths.contains(childURL.standardizedFileURL.path) {
+                continue
+            }
+            guard let child = try? scanRecursive(url: childURL, skipPaths: skipPaths,
+                                                 fileCount: &fileCount, progress: progress) else {
                 continue
             }
             child.parent = node

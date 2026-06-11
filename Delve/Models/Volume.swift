@@ -6,6 +6,11 @@ struct Volume: Identifiable, Hashable {
     let name: String
     let totalCapacity: Int64
     let availableCapacity: Int64
+    var isRemovable: Bool = false
+
+    var isStartupDisk: Bool {
+        url.path == "/"
+    }
 
     var usedCapacity: Int64 {
         totalCapacity - availableCapacity
@@ -42,7 +47,8 @@ struct Volume: Identifiable, Hashable {
                 url: url,
                 name: name,
                 totalCapacity: Int64(total),
-                availableCapacity: Int64(available)
+                availableCapacity: Int64(available),
+                isRemovable: values.volumeIsRemovable ?? false
             )
         }
     }

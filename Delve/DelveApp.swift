@@ -13,5 +13,6 @@ struct DelveApp: App {
         WindowGroup {
             ContentView()
         }
+        .defaultSize(width: 1000, height: 680)
     }
 }
