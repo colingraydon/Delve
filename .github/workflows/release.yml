@@ -1,0 +1,37 @@
+name: Release
+
+# Cuts a GitHub Release with the built .dmg attached whenever a version tag is
+# pushed, e.g.:  git tag v1.0 && git push origin v1.0
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # needed for the GITHUB_TOKEN to create the Release
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ad-hoc signed, un-notarized (no paid Apple Developer ID). The download
+      # works but Gatekeeper warns on first launch; see README for the bypass.
+      # To ship notarized builds, add DEVELOPER_ID / NOTARY_PROFILE here from
+      # repo secrets and an imported Developer ID certificate.
+      - name: Build DMG
+        run: ./scripts/build_dmg.sh
+
+      # A fixed-name copy so a download page can link to a stable URL:
+      # https://github.com/<owner>/Delve/releases/latest/download/Delve.dmg
+      - name: Add stable-named copy
+        run: cp dist/Delve-*.dmg dist/Delve.dmg
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/Delve-*.dmg
+            dist/Delve.dmg
+          generate_release_notes: true
+          fail_on_unmatched_files: true
