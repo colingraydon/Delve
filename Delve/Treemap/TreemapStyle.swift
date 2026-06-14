@@ -1,53 +1,13 @@
 import SwiftUI
 
-/// What kind of thing a tile represents, for coloring. Directories get the
-/// azure family; files get a category color by extension.
-enum TileCategory {
-    case directory
-    case package
-    case video
-    case image
-    case audio
-    case archive
-    case code
-    case document
-    case other
-    case aggregate
-
-    static func of(_ tile: TileRect) -> TileCategory {
-        switch tile.content {
-        case .aggregate:
-            return .aggregate
-        case .node(let node):
-            return of(node)
-        }
-    }
-
-    static func of(_ node: FileNode) -> TileCategory {
-        if node.isPackage { return .package }
-        if node.isDirectory { return .directory }
-        return of(extension: node.url.pathExtension.lowercased())
-    }
-
-    private static let videoExtensions: Set<String> = ["mov", "mp4", "m4v", "mkv", "avi", "wmv", "flv", "webm", "mpg", "mpeg"]
-    private static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "gif", "heic", "heif", "tiff", "tif", "bmp", "raw", "cr2", "nef", "psd", "svg", "webp"]
-    private static let audioExtensions: Set<String> = ["mp3", "m4a", "aac", "wav", "flac", "ogg", "aiff", "aif", "alac", "mid"]
-    private static let archiveExtensions: Set<String> = ["zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar", "dmg", "iso", "pkg", "jar", "xip"]
-    private static let codeExtensions: Set<String> = ["swift", "c", "cpp", "h", "hpp", "m", "mm", "java", "py", "js", "ts", "tsx", "go", "rs", "rb", "sh", "json", "xml", "yml", "yaml", "toml", "html", "css"]
-    private static let documentExtensions: Set<String> = ["pdf", "doc", "docx", "txt", "rtf", "md", "pages", "key", "ppt", "pptx", "xls", "xlsx", "csv", "numbers", "epub"]
-
-    private static func of(extension ext: String) -> TileCategory {
-        if videoExtensions.contains(ext) { return .video }
-        if imageExtensions.contains(ext) { return .image }
-        if audioExtensions.contains(ext) { return .audio }
-        if archiveExtensions.contains(ext) { return .archive }
-        if codeExtensions.contains(ext) { return .code }
-        if documentExtensions.contains(ext) { return .document }
-        return .other
-    }
-}
-
 /// Visual styling for the treemap: tile colors, gradients, labels, hover.
+///
+/// Color is *sibling-distinct*, not type-based: each item at a level takes a
+/// hue rotated from its neighbor by the golden-ratio conjugate, so adjacent
+/// tiles always sit far apart on the wheel and a folder full of one file type
+/// reads as a spectrum rather than a single blob. `colorIndex` is the tile's
+/// rank among its siblings (largest first), so the biggest item anchors a
+/// consistent hue and the same index yields the same color in the sidebar.
 enum TreemapStyle {
     static let inset: CGFloat = 1.5
     static let cornerRadius: CGFloat = 5
@@ -77,69 +37,53 @@ enum TreemapStyle {
         startPoint: .top, endPoint: .bottom
     )
 
-    private struct HSB {
-        let hue: Double
-        let saturation: Double
-        let brightness: Double
+    /// 1/φ. Stepping the hue by this each index spreads colors so that no
+    /// matter how many siblings there are, neighbors never bunch up.
+    private static let goldenConjugate = 0.6180339887498949
 
-        func color(brightnessDelta: Double = 0, saturationDelta: Double = 0) -> Color {
-            Color(hue: hue,
-                  saturation: max(0, min(1, saturation + saturationDelta)),
-                  brightness: max(0, min(1, brightness + brightnessDelta)))
-        }
+    /// The fill color for the item ranked `index` among its siblings. The
+    /// small `+0.03` offset anchors the biggest item at a warm red rather than
+    /// dead-on primary red.
+    static func sliceColor(index: Int, brightnessDelta: Double = 0) -> Color {
+        let hue = (0.03 + Double(index) * goldenConjugate).truncatingRemainder(dividingBy: 1)
+        return Color(hue: hue, saturation: 0.60, brightness: clamp(0.80 + brightnessDelta))
     }
 
-    private static func base(for tile: TileRect) -> HSB {
-        base(for: TileCategory.of(tile), name: tile.name)
+    /// The muted grey-blue of the "smaller items" bucket - deliberately
+    /// desaturated so it recedes behind the vivid, individually-sized tiles.
+    static func aggregateColor(brightnessDelta: Double = 0) -> Color {
+        Color(hue: 0.62, saturation: 0.08, brightness: clamp(0.46 + brightnessDelta))
     }
 
-    private static func base(for category: TileCategory, name: String) -> HSB {
-        switch category {
-        case .directory:
-            // Slight per-name hue drift so adjacent folders read as distinct.
-            let drift = Double(stableHash(name) % 64) / 64.0 * 0.07
-            return HSB(hue: 0.55 + drift, saturation: 0.60, brightness: 0.62)
-        case .package:   return HSB(hue: 0.97, saturation: 0.48, brightness: 0.72)
-        case .video:     return HSB(hue: 0.75, saturation: 0.45, brightness: 0.70)
-        case .image:     return HSB(hue: 0.36, saturation: 0.45, brightness: 0.60)
-        case .audio:     return HSB(hue: 0.88, saturation: 0.42, brightness: 0.70)
-        case .archive:   return HSB(hue: 0.10, saturation: 0.55, brightness: 0.72)
-        case .code:      return HSB(hue: 0.46, saturation: 0.45, brightness: 0.58)
-        case .document:  return HSB(hue: 0.58, saturation: 0.38, brightness: 0.72)
-        case .other:     return HSB(hue: 0.60, saturation: 0.22, brightness: 0.52)
-        case .aggregate: return HSB(hue: 0.62, saturation: 0.10, brightness: 0.42)
-        }
+    /// The flat color for a sidebar legend dot at a given sibling rank.
+    static func legendColor(index: Int) -> Color {
+        sliceColor(index: index, brightnessDelta: 0.04)
     }
 
-    /// The flat color a node renders as - for legend dots in the sidebar,
-    /// kept in sync with tile fills by construction.
-    static func legendColor(for node: FileNode) -> Color {
-        base(for: TileCategory.of(node), name: node.name).color(brightnessDelta: 0.08)
-    }
-
-    static let aggregateLegendColor = HSB(hue: 0.62, saturation: 0.10, brightness: 0.42).color(brightnessDelta: 0.08)
+    static let aggregateLegendColor = aggregateColor(brightnessDelta: 0.04)
 
     /// Vertical gradient shading for a tile, slightly lighter at the top for
     /// a hint of depth. Hover brightens the whole tile.
     static func shading(for tile: TileRect, in frame: CGRect, isHovered: Bool) -> GraphicsContext.Shading {
-        let hsb = base(for: tile)
         let boost = isHovered ? hoverBrightnessBoost : 0
+        let top: Color
+        let bottom: Color
+        switch tile.content {
+        case .aggregate:
+            top = aggregateColor(brightnessDelta: 0.06 + boost)
+            bottom = aggregateColor(brightnessDelta: boost)
+        case .node:
+            top = sliceColor(index: tile.colorIndex, brightnessDelta: 0.08 + boost)
+            bottom = sliceColor(index: tile.colorIndex, brightnessDelta: boost)
+        }
         return .linearGradient(
-            Gradient(colors: [
-                hsb.color(brightnessDelta: 0.09 + boost, saturationDelta: -0.05),
-                hsb.color(brightnessDelta: boost)
-            ]),
+            Gradient(colors: [top, bottom]),
             startPoint: CGPoint(x: frame.midX, y: frame.minY),
             endPoint: CGPoint(x: frame.midX, y: frame.maxY)
         )
     }
 
-    /// djb2 over the name - stable across launches, unlike `Hashable`.
-    private static func stableHash(_ string: String) -> UInt64 {
-        var hash: UInt64 = 5381
-        for scalar in string.unicodeScalars {
-            hash = hash &* 33 &+ UInt64(scalar.value)
-        }
-        return hash
+    private static func clamp(_ value: Double) -> Double {
+        max(0, min(1, value))
     }
 }

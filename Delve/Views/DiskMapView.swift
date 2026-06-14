@@ -247,8 +247,10 @@ private struct SidebarView: View {
 
             ScrollView {
                 LazyVStack(spacing: 1) {
-                    ForEach(children) { child in
-                        SidebarRow(node: child, onSelect: onSelect)
+                    // Same largest-first order as the treemap layout, so a
+                    // row's color dot matches its tile by sibling rank.
+                    ForEach(Array(children.enumerated()), id: \.element.id) { index, child in
+                        SidebarRow(node: child, colorIndex: index, onSelect: onSelect)
                     }
                 }
                 .padding(8)
@@ -277,6 +279,7 @@ private struct SidebarView: View {
 
 private struct SidebarRow: View {
     let node: FileNode
+    let colorIndex: Int
     let onSelect: (FileNode) -> Void
 
     @State private var hovering = false
@@ -288,7 +291,7 @@ private struct SidebarRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(TreemapStyle.legendColor(for: node))
+                .fill(TreemapStyle.legendColor(index: colorIndex))
                 .frame(width: 8, height: 8)
             Text(node.name)
                 .lineLimit(1)

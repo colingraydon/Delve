@@ -138,4 +138,27 @@ final class TreemapLayoutTests: XCTestCase {
         XCTAssertEqual(tiles.count, 1)
         XCTAssertEqual(tiles[0].name, "real")
     }
+
+    func testColorIndexFollowsLargestFirstRank() {
+        // Deliberately out of order; the layout sorts largest-first and the
+        // color index must be the post-sort rank so tiles and sidebar agree.
+        let root = dir("root", [leaf("small", 1000), leaf("big", 5000), leaf("mid", 3000)])
+        let tiles = TreemapLayout.layout(root: root, in: canvas)
+
+        let indexByName = Dictionary(uniqueKeysWithValues: tiles.map { ($0.name, $0.colorIndex) })
+        XCTAssertEqual(indexByName["big"], 0)
+        XCTAssertEqual(indexByName["mid"], 1)
+        XCTAssertEqual(indexByName["small"], 2)
+    }
+
+    func testAggregateTileGetsNegativeColorIndex() {
+        var children = [leaf("big", 10000)]
+        children += (1...20).map { leaf("tiny\($0)", 100) }
+        let root = dir("root", children)
+
+        let tiles = TreemapLayout.layout(root: root, in: canvas)
+        let aggregate = tiles.first { if case .aggregate = $0.content { return true } else { return false } }
+        // Sentinel: the aggregate is drawn a fixed grey, not a sibling hue.
+        XCTAssertEqual(aggregate?.colorIndex, -1)
+    }
 }

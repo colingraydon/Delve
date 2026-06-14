@@ -8,71 +8,51 @@ final class TreemapStyleTests: XCTestCase {
                  isDirectory: false, isPackage: false, ownSize: 1)
     }
 
-    private func directory(_ name: String) -> FileNode {
-        FileNode(url: URL(fileURLWithPath: "/\(name)"), name: name,
-                 isDirectory: true, isPackage: false, ownSize: 0)
+    func testSliceColorIsDeterministic() {
+        XCTAssertEqual(TreemapStyle.sliceColor(index: 3), TreemapStyle.sliceColor(index: 3))
     }
 
-    func testCategoryByExtension() {
-        XCTAssertEqual(TileCategory.of(file("clip.mp4")), .video)
-        XCTAssertEqual(TileCategory.of(file("photo.JPG")), .image)
-        XCTAssertEqual(TileCategory.of(file("song.mp3")), .audio)
-        XCTAssertEqual(TileCategory.of(file("backup.zip")), .archive)
-        XCTAssertEqual(TileCategory.of(file("main.swift")), .code)
-        XCTAssertEqual(TileCategory.of(file("report.pdf")), .document)
-        XCTAssertEqual(TileCategory.of(file("mystery.xyz")), .other)
-        XCTAssertEqual(TileCategory.of(file("no_extension")), .other)
+    func testAdjacentSliceColorsDiffer() {
+        // The whole point of golden-angle hue stepping: neighbors never bunch.
+        for index in 0..<20 {
+            XCTAssertNotEqual(
+                TreemapStyle.sliceColor(index: index),
+                TreemapStyle.sliceColor(index: index + 1),
+                "slices \(index) and \(index + 1) should be visually distinct"
+            )
+        }
     }
 
-    func testDirectoryAndPackageCategories() {
-        XCTAssertEqual(TileCategory.of(directory("Documents")), .directory)
-
-        let app = FileNode(url: URL(fileURLWithPath: "/Xcode.app"), name: "Xcode.app",
-                           isDirectory: true, isPackage: true, ownSize: 1)
-        XCTAssertEqual(TileCategory.of(app), .package)
-    }
-
-    func testTileCategoryMatchesNodeCategory() {
-        let node = file("movie.mkv")
-        let tile = TileRect(frame: .zero, content: .node(node))
-        XCTAssertEqual(TileCategory.of(tile), TileCategory.of(node))
-    }
-
-    func testAggregateTileCategory() {
-        let tile = TileRect(frame: .zero, content: .aggregate(count: 5, totalSize: 100))
-        XCTAssertEqual(TileCategory.of(tile), .aggregate)
-    }
-
-    func testLegendColorIsStableForSameName() {
-        XCTAssertEqual(
-            TreemapStyle.legendColor(for: directory("Documents")),
-            TreemapStyle.legendColor(for: directory("Documents"))
-        )
-    }
-
-    func testLegendColorDriftsAcrossDirectoryNames() {
+    func testBrightnessDeltaChangesTheColor() {
         XCTAssertNotEqual(
-            TreemapStyle.legendColor(for: directory("Documents")),
-            TreemapStyle.legendColor(for: directory("Movies"))
+            TreemapStyle.sliceColor(index: 5),
+            TreemapStyle.sliceColor(index: 5, brightnessDelta: 0.2)
         )
     }
 
-    func testLegendColorDiffersByCategory() {
-        XCTAssertNotEqual(
-            TreemapStyle.legendColor(for: file("clip.mp4")),
-            TreemapStyle.legendColor(for: file("backup.zip"))
-        )
+    func testBrightnessClampsAndDoesNotCrashAtExtremes() {
+        // Deltas past the [0,1] brightness range must clamp rather than trap.
+        _ = TreemapStyle.sliceColor(index: 0, brightnessDelta: 5)
+        _ = TreemapStyle.sliceColor(index: 0, brightnessDelta: -5)
+        _ = TreemapStyle.aggregateColor(brightnessDelta: 5)
+        _ = TreemapStyle.aggregateColor(brightnessDelta: -5)
     }
 
-    func testShadingIsBuildableForEveryTileKind() {
+    func testLegendColorMatchesSliceFamily() {
+        // The sidebar dot for rank N must track the tile color for rank N.
+        XCTAssertEqual(TreemapStyle.legendColor(index: 2), TreemapStyle.legendColor(index: 2))
+        XCTAssertNotEqual(TreemapStyle.legendColor(index: 2), TreemapStyle.legendColor(index: 3))
+    }
+
+    func testShadingBuildsForNodeAndAggregateTiles() {
         let frame = CGRect(x: 0, y: 0, width: 100, height: 80)
         let tiles = [
-            TileRect(frame: frame, content: .node(file("clip.mp4"))),
-            TileRect(frame: frame, content: .node(directory("Documents"))),
-            TileRect(frame: frame, content: .aggregate(count: 2, totalSize: 10))
+            TileRect(frame: frame, content: .node(file("clip.mp4")), colorIndex: 0),
+            TileRect(frame: frame, content: .node(file("doc.pdf")), colorIndex: 7),
+            TileRect(frame: frame, content: .aggregate(count: 2, totalSize: 10), colorIndex: -1)
         ]
-        // Shading construction walks the full palette path; this pins it
-        // against crashes for every content kind, hovered or not.
+        // Shading construction walks the full color path; this pins it against
+        // crashes for every content kind, hovered or not.
         for tile in tiles {
             _ = TreemapStyle.shading(for: tile, in: frame, isHovered: false)
             _ = TreemapStyle.shading(for: tile, in: frame, isHovered: true)

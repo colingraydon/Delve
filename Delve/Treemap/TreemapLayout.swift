@@ -16,6 +16,15 @@ struct TileRect {
 
     let frame: CGRect
     let content: Content
+    /// Rank among siblings (largest first), driving the sibling-distinct fill
+    /// color. The aggregate bucket ignores it (it's drawn a fixed grey).
+    let colorIndex: Int
+
+    init(frame: CGRect, content: Content, colorIndex: Int = 0) {
+        self.frame = frame
+        self.content = content
+        self.colorIndex = colorIndex
+    }
 
     var totalSize: Int64 {
         switch content {
@@ -53,19 +62,20 @@ struct TreemapLayout {
     private struct Item {
         let size: Int64
         let content: TileRect.Content
+        let colorIndex: Int
     }
 
     static func layout(root: FileNode, in rect: CGRect) -> [TileRect] {
         guard root.totalSize > 0, rect.width > 0, rect.height > 0 else { return [] }
 
         let threshold = Double(root.totalSize) * LayoutConstants.minTileFraction
-        var big: [Item] = []
+        var big: [(size: Int64, content: TileRect.Content)] = []
         var smallCount = 0
         var smallTotal: Int64 = 0
 
         for child in root.children where child.totalSize > 0 {
             if Double(child.totalSize) >= threshold {
-                big.append(Item(size: child.totalSize, content: .node(child)))
+                big.append((child.totalSize, .node(child)))
             } else {
                 smallCount += 1
                 smallTotal += child.totalSize
@@ -74,9 +84,15 @@ struct TreemapLayout {
 
         big.sort { $0.size > $1.size }
 
-        var items = big
+        // Color index is the post-sort rank, so the same item gets the same
+        // hue here and in the sidebar (which sorts identically).
+        var items = big.enumerated().map { index, item in
+            Item(size: item.size, content: item.content, colorIndex: index)
+        }
         if smallCount > 0 {
-            items.append(Item(size: smallTotal, content: .aggregate(count: smallCount, totalSize: smallTotal)))
+            items.append(Item(size: smallTotal,
+                              content: .aggregate(count: smallCount, totalSize: smallTotal),
+                              colorIndex: -1))
         }
 
         guard !items.isEmpty else { return [] }
@@ -132,7 +148,7 @@ struct TreemapLayout {
                 frame = CGRect(x: rect.minX + offset, y: rect.minY, width: itemLength, height: rowLength)
             }
             offset += itemLength
-            results.append(TileRect(frame: frame, content: item.content))
+            results.append(TileRect(frame: frame, content: item.content, colorIndex: item.colorIndex))
         }
 
         if isHorizontal {
