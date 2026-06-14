@@ -34,6 +34,18 @@ final class FileNode: Identifiable, @unchecked Sendable {
         self.parent = nil
     }
 
+    /// True if `ancestor` lies somewhere on this node's parent chain (strictly
+    /// above it - a node is not its own descendant). Used by the trash collector
+    /// to drop items already contained by a queued folder.
+    nonisolated func isDescendant(of ancestor: FileNode) -> Bool {
+        var current = parent
+        while let node = current {
+            if node === ancestor { return true }
+            current = node.parent
+        }
+        return false
+    }
+
     /// The chain of nodes from the tree's root down to (and including) this node,
     /// built by walking `parent` pointers. Used for breadcrumb navigation.
     nonisolated var pathFromRoot: [FileNode] {

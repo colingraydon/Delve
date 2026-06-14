@@ -2,15 +2,21 @@ import SwiftUI
 
 /// A navigable treemap with a DaisyDisk-style sidebar: breadcrumbs on top,
 /// map on the left, the current folder's contents listed on the right. Owns
-/// the navigation state and the move-to-trash flow (a 5-second countdown
-/// with Undo before anything is actually trashed).
+/// the navigation state and the trash "collector": tiles dragged onto the can
+/// queue up in a bottom tray, then "Move All to Trash" runs a single 5-second
+/// countdown (with Undo) before anything is actually trashed.
 struct DiskMapView: View {
     let root: FileNode
 
     @State private var currentNode: FileNode
     /// Bumped after in-place tree mutations (trash) to force a relayout.
     @State private var revision = 0
-    @State private var pendingTrash: PendingTrash?
+    /// Items queued for deletion, newest last. Persists across navigation.
+    @State private var staged: [FileNode] = []
+    /// True while the 5-second batch countdown is running.
+    @State private var committing = false
+    @State private var commitStart: Date = .now
+    @State private var commitDeadline: Date = .now
     @State private var trashTask: Task<Void, Never>?
     @State private var trashError: String?
 
@@ -18,6 +24,8 @@ struct DiskMapView: View {
         self.root = root
         _currentNode = State(initialValue: root)
     }
+
+    private var stagedIDs: Set<FileNode.ID> { Set(staged.map(\.id)) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,16 +39,35 @@ struct DiskMapView: View {
                 }
                 .frame(minWidth: 220, idealWidth: 270, maxWidth: 380, maxHeight: .infinity)
             }
+
+            // The collector docks below the map instead of floating over it,
+            // so it never covers what you're looking at.
+            if !staged.isEmpty {
+                Divider()
+                TrashCollectorBar(
+                    items: staged,
+                    committing: committing,
+                    start: commitStart,
+                    deadline: commitDeadline,
+                    onRemove: { unstage($0) },
+                    onClear: { clearStaged() },
+                    onMoveAll: { moveAllToTrash() },
+                    onUndo: { cancelCommit() }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
-        // Reset to the new root if the underlying tree is replaced (e.g. a rescan).
+        // Reset to the new root if the underlying tree is replaced (e.g. a rescan):
+        // the queued node references belong to the old tree.
         .onChange(of: root.id) {
-            cancelPendingTrash()
+            cancelCommit()
+            staged = []
             currentNode = root
         }
-        // Leaving the map (back to disks) abandons the countdown: not deleting
-        // is the safe interpretation of an interrupted timer.
+        // Leaving the map abandons an in-flight countdown: not deleting is the
+        // safe reading of an interrupted timer.
         .onDisappear {
-            cancelPendingTrash()
+            cancelCommit()
         }
         .alert("Couldn't Move to Trash", isPresented: Binding(
             get: { trashError != nil },
@@ -53,21 +80,17 @@ struct DiskMapView: View {
     }
 
     private var mapArea: some View {
-        ZStack(alignment: .bottom) {
+        ZStack {
             TreemapStyle.background
 
-            TreemapView(root: currentNode, revision: revision) { node in
-                currentNode = node
-            } onTrash: { node in
-                requestTrash(node)
-            }
+            TreemapView(
+                root: currentNode,
+                revision: revision,
+                onDrillInto: { currentNode = $0 },
+                onStage: { stage($0) },
+                stagedIDs: stagedIDs
+            )
             .padding(14)
-
-            if let pendingTrash {
-                TrashCountdownToast(pending: pendingTrash, onUndo: cancelPendingTrash)
-                    .padding(.bottom, 20)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
         }
     }
 
@@ -95,116 +118,223 @@ struct DiskMapView: View {
         .padding(.vertical, 8)
     }
 
-    // MARK: - Move to Trash (with countdown)
+    // MARK: - Trash collector
 
-    private func requestTrash(_ node: FileNode) {
-        // One pending deletion at a time: starting a second one commits the
-        // first immediately rather than silently dropping it.
-        if let earlier = pendingTrash {
-            trashTask?.cancel()
-            commit(earlier)
-        }
-        // Re-check at the moment of action; the context menu also disables these.
+    private func stage(_ node: FileNode) {
+        // The drop zone already refuses protected items; re-check defensively.
         guard !TrashGuard.isProtected(node.url) else {
             trashError = "\u{201C}\(node.name)\u{201D} is a protected system or personal folder."
             return
         }
-        let pending = PendingTrash(node: node, start: .now, deadline: .now.addingTimeInterval(5))
+        guard !staged.contains(where: { $0 === node }) else { return }
+        // Queuing a folder supersedes any of its already-queued descendants;
+        // queuing something already inside a queued folder is a no-op.
+        if isDescendant(node, ofAny: staged) { return }
         withAnimation(.spring(duration: 0.3)) {
-            pendingTrash = pending
+            staged.removeAll { $0.isDescendant(of: node) }
+            staged.append(node)
+            // Adding to the queue mid-countdown calls it off, back to review.
+            if committing { stopCountdown() }
         }
-        trashTask = Task {
+    }
+
+    private func unstage(_ node: FileNode) {
+        withAnimation(.spring(duration: 0.3)) {
+            staged.removeAll { $0 === node }
+            if committing { stopCountdown() }
+        }
+    }
+
+    private func clearStaged() {
+        cancelCommit()
+        withAnimation(.spring(duration: 0.3)) { staged = [] }
+    }
+
+    private func moveAllToTrash() {
+        guard !staged.isEmpty, !committing else { return }
+        commitStart = .now
+        commitDeadline = .now.addingTimeInterval(5)
+        withAnimation(.spring(duration: 0.3)) { committing = true }
+        trashTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled else { return }
-            commit(pending)
+            commitAll()
         }
     }
 
-    private func cancelPendingTrash() {
+    private func stopCountdown() {
         trashTask?.cancel()
         trashTask = nil
+        committing = false
+    }
+
+    /// Undo: cancel the countdown but keep the queue so it can be reviewed.
+    private func cancelCommit() {
+        withAnimation(.spring(duration: 0.3)) { stopCountdown() }
+    }
+
+    private func commitAll() {
+        // Skip anything detached by an earlier deletion, or nested under another
+        // queued item (its folder will take it along).
+        let toTrash = staged.filter { attachedToTree($0) && !isDescendant($0, ofAny: staged) }
+        var failures: [String] = []
+
+        for node in toTrash {
+            do {
+                try FileManager.default.trashItem(at: node.url, resultingItemURL: nil)
+                // If we're viewing inside a deleted subtree, climb out first.
+                if currentNode.pathFromRoot.contains(where: { $0 === node }) {
+                    currentNode = node.parent ?? root
+                }
+                node.removeFromParent()
+            } catch {
+                failures.append("\(node.name): \(error.localizedDescription)")
+            }
+        }
+
+        revision += 1
         withAnimation(.spring(duration: 0.3)) {
-            pendingTrash = nil
+            staged = []
+            committing = false
+        }
+        trashTask = nil
+        if !failures.isEmpty {
+            trashError = "Some items couldn't be moved to the Trash:\n" + failures.joined(separator: "\n")
         }
     }
 
-    private func commit(_ pending: PendingTrash) {
-        withAnimation(.spring(duration: 0.3)) {
-            pendingTrash = nil
-        }
-        let node = pending.node
-        do {
-            try FileManager.default.trashItem(at: node.url, resultingItemURL: nil)
-            // If the view is somehow inside the deleted subtree, climb out first.
-            if currentNode.pathFromRoot.contains(where: { $0 === node }) {
-                currentNode = node.parent ?? root
-            }
-            node.removeFromParent()
-            revision += 1
-        } catch {
-            trashError = error.localizedDescription
-        }
+    // MARK: - Tree relationship helpers
+
+    private func attachedToTree(_ node: FileNode) -> Bool {
+        node === root || node.isDescendant(of: root)
+    }
+
+    private func isDescendant(_ node: FileNode, ofAny nodes: [FileNode]) -> Bool {
+        nodes.contains { $0 !== node && node.isDescendant(of: $0) }
     }
 }
 
-private struct PendingTrash {
-    let node: FileNode
+/// The DaisyDisk-style collector: a slim bar docked under the map listing what's
+/// queued for the trash as horizontal chips, with a single "Move All to Trash"
+/// that runs the 5-second countdown (a draining bar + Undo while it runs).
+private struct TrashCollectorBar: View {
+    let items: [FileNode]
+    let committing: Bool
     let start: Date
     let deadline: Date
-}
-
-/// The countdown banner: a draining 5-second bar, the seconds remaining, and
-/// a prominent Undo. The deletion only happens once the bar empties.
-private struct TrashCountdownToast: View {
-    let pending: PendingTrash
+    let onRemove: (FileNode) -> Void
+    let onClear: () -> Void
+    let onMoveAll: () -> Void
     let onUndo: () -> Void
 
+    private var totalSize: Int64 { items.reduce(0) { $0 + $1.totalSize } }
+
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
+            summary
+            Divider().frame(height: 34)
+
+            if committing {
+                countdown
+            } else {
+                chips
+                Spacer(minLength: 8)
+                Button("Clear", action: onClear)
+                Button("Move All to Trash", role: .destructive, action: onMoveAll)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(items.isEmpty)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
+        .frame(height: 60)
+        .background(.regularMaterial)
+    }
+
+    private var summary: some View {
+        HStack(spacing: 8) {
             Image(systemName: "trash.fill")
-                .font(.title3)
                 .foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Trash Collector")
+                    .font(.subheadline.weight(.semibold))
+                Text("\(items.count) item\(items.count == 1 ? "" : "s")  ·  \(SizeFormatter.string(totalSize))")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .fixedSize()
+    }
 
-            // Drawn with TimelineView instead of ProgressView(timerInterval:):
-            // the system bar re-anchors on its one-second ticks and visibly
-            // jumps; recomputing the fraction per frame stays smooth.
-            TimelineView(.animation) { timeline in
-                let total = pending.deadline.timeIntervalSince(pending.start)
-                let remaining = max(0, pending.deadline.timeIntervalSince(timeline.date))
-
-                HStack(spacing: 14) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Moving \u{201C}\(pending.node.name)\u{201D} to Trash")
-                            .font(.callout.weight(.medium))
+    private var chips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(items) { item in
+                    HStack(spacing: 6) {
+                        Image(systemName: item.isDirectory ? "folder.fill" : "doc.fill")
+                            .foregroundStyle(.secondary)
+                        Text(item.name)
                             .lineLimit(1)
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                Capsule().fill(.quaternary)
-                                Capsule()
-                                    .fill(.red)
-                                    .frame(width: geo.size.width * (total > 0 ? remaining / total : 0))
-                            }
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 150)
+                            .fixedSize()
+                        Text(SizeFormatter.string(item.totalSize))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                        Button {
+                            onRemove(item)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.tertiary)
                         }
-                        .frame(width: 240, height: 5)
+                        .buttonStyle(.plain)
+                        .help("Remove from collector")
                     }
-
-                    Text("\(Int(remaining.rounded(.up)))s")
-                        .font(.title3.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 30)
+                    .font(.callout)
+                    .padding(.leading, 9)
+                    .padding(.trailing, 6)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(.white.opacity(0.10)))
                 }
             }
-
-            Button("Undo", action: onUndo)
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut("z", modifiers: .command)
+            .padding(.vertical, 1)
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.12)))
-        .shadow(color: .black.opacity(0.35), radius: 14, y: 4)
+    }
+
+    private var countdown: some View {
+        // Per-frame draining bar (a system ProgressView(timerInterval:) visibly
+        // jumps on its one-second ticks).
+        TimelineView(.animation) { timeline in
+            let total = deadline.timeIntervalSince(start)
+            let remaining = max(0, deadline.timeIntervalSince(timeline.date))
+            HStack(spacing: 12) {
+                Text("Moving \(items.count) item\(items.count == 1 ? "" : "s") to Trash")
+                    .font(.callout.weight(.medium))
+                    .fixedSize()
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.quaternary)
+                        Capsule()
+                            .fill(.red)
+                            .frame(width: geo.size.width * (total > 0 ? remaining / total : 0))
+                    }
+                }
+                .frame(height: 6)
+
+                Text("\(Int(remaining.rounded(.up)))s")
+                    .font(.body.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 28)
+
+                Button("Undo", action: onUndo)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("z", modifiers: .command)
+            }
+        }
     }
 }
 

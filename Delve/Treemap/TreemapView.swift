@@ -8,8 +8,11 @@ struct TreemapView: View {
     /// Called when a directory tile is clicked, to drill into it.
     /// Stays a callback so this view remains a pure renderer with no nav state.
     var onDrillInto: (FileNode) -> Void = { _ in }
-    /// Called when the user picks "Move to Trash" on a tile.
-    var onTrash: (FileNode) -> Void = { _ in }
+    /// Called when a tile is dropped on the trash can / picked from the menu,
+    /// queuing it in the collector (nothing is deleted here).
+    var onStage: (FileNode) -> Void = { _ in }
+    /// Node ids already queued in the collector, so their tiles read as dimmed.
+    var stagedIDs: Set<FileNode.ID> = []
 
     @State private var tiles: [TileRect] = []
     @State private var hover: HoverState?
@@ -44,7 +47,8 @@ struct TreemapView: View {
                 progress: zoomProgress,
                 zoom: zoom,
                 tiles: tiles,
-                hoveredID: hover?.tile.id
+                hoveredID: hover?.tile.id,
+                stagedIDs: stagedIDs
             )
             .onChange(of: LayoutKey(size: geo.size, rootID: root.id, revision: revision), initial: true) {
                 relayout(size: geo.size)
@@ -88,7 +92,8 @@ struct TreemapView: View {
                 if let drag {
                     TrashDropZone(
                         active: trashZoneContains(drag.location, canvasSize: geo.size),
-                        isProtected: drag.isProtected
+                        isProtected: drag.isProtected,
+                        queuedCount: stagedIDs.count
                     )
                     .position(trashZoneCenter(canvasSize: geo.size))
                     .transition(.scale.combined(with: .opacity))
@@ -128,7 +133,7 @@ struct TreemapView: View {
                     self.drag = nil
                 }
                 if !drag.isProtected, trashZoneContains(value.location, canvasSize: canvasSize) {
-                    onTrash(drag.node)
+                    onStage(drag.node)
                 }
             }
     }
@@ -149,12 +154,12 @@ struct TreemapView: View {
         }
         Divider()
         if TrashGuard.isProtected(node.url) {
-            Button("Move to Trash") {}
+            Button("Add to Trash") {}
                 .disabled(true)
             Text("Protected - Delve won't trash system or personal folders")
         } else {
-            Button("Move to Trash", role: .destructive) {
-                onTrash(node)
+            Button("Add to Trash", role: .destructive) {
+                onStage(node)
             }
         }
     }
@@ -203,6 +208,7 @@ struct TreemapView: View {
 private struct TrashDropZone: View {
     let active: Bool
     let isProtected: Bool
+    let queuedCount: Int
 
     var body: some View {
         VStack(spacing: 6) {
@@ -215,11 +221,21 @@ private struct TrashDropZone: View {
                 Image(systemName: isProtected ? "lock.fill" : (active ? "trash.fill" : "trash"))
                     .font(.system(size: 24, weight: .medium))
                     .foregroundStyle(.white)
+
+                // Badge showing how many items are already queued in the collector.
+                if queuedCount > 0 && !isProtected {
+                    Text("\(queuedCount)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(5)
+                        .background(Circle().fill(.blue))
+                        .offset(x: 26, y: -26)
+                }
             }
             .scaleEffect(active && !isProtected ? 1.18 : 1)
             .animation(.spring(duration: 0.2), value: active)
 
-            Text(isProtected ? "Protected" : "Move to Trash")
+            Text(isProtected ? "Protected" : "Drop to Add to Trash")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.9))
                 .padding(.horizontal, 8)
@@ -262,10 +278,16 @@ private struct ZoomableTreemapCanvas: View, Animatable {
     let zoom: ZoomTransition?
     let tiles: [TileRect]
     let hoveredID: AnyHashable?
+    let stagedIDs: Set<FileNode.ID>
 
     var animatableData: CGFloat {
         get { progress }
         set { progress = newValue }
+    }
+
+    private func isStaged(_ tile: TileRect) -> Bool {
+        if case .node(let node) = tile.content { return stagedIDs.contains(node.id) }
+        return false
     }
 
     var body: some View {
@@ -275,7 +297,8 @@ private struct ZoomableTreemapCanvas: View, Animatable {
                 drawZoom(zoom, fullRect: fullRect, in: &context)
             } else {
                 for tile in tiles {
-                    draw(tile: tile, frame: tile.frame, isHovered: tile.id == hoveredID, in: &context)
+                    draw(tile: tile, frame: tile.frame, isHovered: tile.id == hoveredID,
+                         isStaged: isStaged(tile), in: &context)
                 }
             }
         }
@@ -300,7 +323,7 @@ private struct ZoomableTreemapCanvas: View, Animatable {
         for tile in zoom.parentTiles {
             let frame = remap(tile.frame, from: zoom.focusRect, to: morphRect)
             guard frame.intersects(fullRect) else { continue }
-            draw(tile: tile, frame: frame, isHovered: false, in: &context)
+            draw(tile: tile, frame: frame, isHovered: false, isStaged: isStaged(tile), in: &context)
         }
 
         // Deeper level, compressed into morphRect, cross-fading over the
@@ -311,7 +334,7 @@ private struct ZoomableTreemapCanvas: View, Animatable {
                                 cornerRadius: TreemapStyle.cornerRadius))
             for tile in zoom.deeperTiles {
                 let frame = remap(tile.frame, from: fullRect, to: morphRect)
-                draw(tile: tile, frame: frame, isHovered: false, in: &layer)
+                draw(tile: tile, frame: frame, isHovered: false, isStaged: isStaged(tile), in: &layer)
             }
         }
     }
@@ -340,7 +363,7 @@ private struct ZoomableTreemapCanvas: View, Animatable {
 
     // MARK: - Tile drawing
 
-    private func draw(tile: TileRect, frame rawFrame: CGRect, isHovered: Bool, in context: inout GraphicsContext) {
+    private func draw(tile: TileRect, frame rawFrame: CGRect, isHovered: Bool, isStaged: Bool, in context: inout GraphicsContext) {
         let frame = rawFrame.insetBy(dx: TreemapStyle.inset, dy: TreemapStyle.inset)
         guard frame.width >= LayoutConstants.minTileSize, frame.height >= LayoutConstants.minTileSize else { return }
 
@@ -355,6 +378,18 @@ private struct ZoomableTreemapCanvas: View, Animatable {
 
         drawDirectoryChevron(for: tile, in: frame, context: &context)
         drawLabel(for: tile, in: frame, context: &context)
+
+        // Queued-for-trash tiles read as dimmed with a trash glyph, so it's
+        // clear at a glance what's waiting in the collector.
+        if isStaged {
+            context.fill(path, with: .color(.black.opacity(0.5)))
+            if frame.width >= 26, frame.height >= 26 {
+                let glyph = Text(Image(systemName: "trash.fill"))
+                    .font(.system(size: min(20, frame.height * 0.3)))
+                    .foregroundColor(.white.opacity(0.9))
+                context.draw(context.resolve(glyph), at: CGPoint(x: frame.midX, y: frame.midY))
+            }
+        }
     }
 
     /// Fades labels in as a tile approaches the size where they fit, instead

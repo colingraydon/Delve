@@ -65,4 +65,29 @@ final class FileNodeTests: XCTestCase {
         root.removeFromParent()
         XCTAssertEqual(root.totalSize, 50)
     }
+
+    func testIsDescendantWalksThePastParentChain() {
+        let root = makeNode("root")
+        let mid = makeNode("mid")
+        let leaf = makeNode("leaf")
+        link(root, mid)
+        link(mid, leaf)
+
+        XCTAssertTrue(leaf.isDescendant(of: root))
+        XCTAssertTrue(leaf.isDescendant(of: mid))
+        XCTAssertTrue(mid.isDescendant(of: root))
+    }
+
+    func testIsDescendantIsStrictAndDirectional() {
+        let root = makeNode("root")
+        let child = makeNode("child")
+        let other = makeNode("other")
+        link(root, child)
+
+        // A node is not its own descendant, and the relationship is one-way.
+        XCTAssertFalse(child.isDescendant(of: child))
+        XCTAssertFalse(root.isDescendant(of: child))
+        // Unrelated nodes in different trees.
+        XCTAssertFalse(child.isDescendant(of: other))
+    }
 }
