@@ -1,6 +1,11 @@
 # macOS
 .DS_Store
 
+# Distribution build artifacts (publish these to GitHub Releases, not git)
+build/
+dist/
+*.dmg
+
 # Xcode
 #
 # gitignore contributors: remember to update Global/Xcode.gitignore, Objective-C.gitignore & Swift.gitignore
