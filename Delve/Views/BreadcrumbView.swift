@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// A clickable path trail (root › … › current). Each crumb jumps to that node.
-/// Pure and reusable — give it a path and a selection callback.
+/// Pure and reusable - give it a path and a selection callback.
 struct BreadcrumbView: View {
     let path: [FileNode]
     let onSelect: (FileNode) -> Void
