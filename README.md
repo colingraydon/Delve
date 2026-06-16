@@ -3,7 +3,7 @@
 A free, open-source disk space visualizer for macOS. Delve scans a drive or
 folder and draws what's using your space as an interactive **treemap**, where
 bigger files and folders are bigger rectangles, so you can spot space hogs at
-a glance and clear them out. It's inspired by DaisyDisk.
+a glance and clear them out.
 
 > **Status:** unsigned, un-notarized builds (see [Installing](#installing)).
 > macOS 14 (Sonoma) or later.
