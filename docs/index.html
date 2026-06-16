@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Delve: A free disk space visualizer for macOS</title>
+<meta name="description" content="Delve scans your Mac and draws what's using your space as an interactive treemap. Free and open source." />
+
+<!-- Open Graph / social preview -->
+<meta property="og:title" content="Delve: A free disk space visualizer for macOS" />
+<meta property="og:description" content="See what's eating your disk at a glance with an interactive treemap. Free and open source." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://colingraydon.github.io/Delve/" />
+
+<style>
+  /* Palette lifted from the app itself (Delve/Treemap/TreemapStyle.swift):
+     the dark window gradient and the cyan->blue logo accent, plus the
+     golden-ratio tile hues used for the feature dots. */
+  :root {
+    --bg-top:    #1E222B;  /* HSB(0.62,0.30,0.17), treemap background top */
+    --bg-bottom: #12131C;  /* HSB(0.65,0.35,0.11), treemap background bottom */
+    --surface:   #1c2029;
+    --surface-2: #232834;
+    --border:    rgba(255,255,255,0.08);
+    --text:      #eef1f6;
+    --text-dim:  #a7b0c0;
+    --text-dimmer: #6b7587;
+    --accent-cyan: #64D2FF;
+    --accent-blue: #0A84FF;
+    --tile-1: #CC6852;
+    --tile-2: #525FCC;
+    --tile-3: #83CC52;
+    --tile-4: #CC52A7;
+    --tile-5: #52CACC;
+    --radius: 16px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(1200px 600px at 50% -10%, rgba(10,132,255,0.18), transparent 60%),
+      linear-gradient(180deg, var(--bg-top), var(--bg-bottom) 70%);
+    background-attachment: fixed;
+    min-height: 100vh;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---- Header / nav ---- */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 28px 0;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 1.25rem; letter-spacing: -0.01em; }
+  .brand .mark {
+    width: 30px; height: 30px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+    box-shadow: 0 4px 14px rgba(10,132,255,0.4);
+  }
+  .nav-links { display: flex; gap: 22px; align-items: center; }
+  .nav-links a { color: var(--text-dim); text-decoration: none; font-size: 0.95rem; font-weight: 500; transition: color .15s; }
+  .nav-links a:hover { color: var(--text); }
+
+  /* ---- Hero ---- */
+  .hero { text-align: center; padding: 56px 0 40px; }
+  .hero h1 {
+    font-size: clamp(2.4rem, 6vw, 3.8rem);
+    line-height: 1.05; letter-spacing: -0.03em; font-weight: 800;
+    margin-bottom: 18px;
+  }
+  .hero h1 .grad {
+    background: linear-gradient(120deg, var(--accent-cyan), var(--accent-blue));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero p.lead {
+    font-size: clamp(1.05rem, 2.2vw, 1.3rem);
+    color: var(--text-dim); max-width: 620px; margin: 0 auto 32px;
+  }
+
+  .cta-row { display: flex; gap: 14px; justify-content: center; align-items: center; flex-wrap: wrap; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-size: 1.05rem; font-weight: 600; text-decoration: none;
+    padding: 14px 26px; border-radius: 12px; transition: transform .12s ease, box-shadow .2s ease;
+  }
+  .btn-primary {
+    color: #fff;
+    background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+    box-shadow: 0 8px 24px rgba(10,132,255,0.35);
+  }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 12px 30px rgba(10,132,255,0.45); }
+  .btn-ghost {
+    color: var(--text); background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .btn-ghost:hover { background: var(--surface-2); }
+  .btn .sub { font-size: 0.78rem; font-weight: 500; color: rgba(255,255,255,0.75); }
+
+  .meta-line { margin-top: 16px; font-size: 0.85rem; color: var(--text-dimmer); }
+
+  /* ---- Screenshot ---- */
+  .shot-wrap { margin: 48px 0 8px; }
+  .shot {
+    width: 100%; border-radius: var(--radius);
+    border: 1px solid var(--border);
+    box-shadow: 0 30px 80px rgba(0,0,0,0.5);
+    display: block;
+  }
+  /* Placeholder shown until docs/screenshot.png exists */
+  .shot-placeholder {
+    aspect-ratio: 16 / 10; border-radius: var(--radius);
+    border: 1px dashed rgba(255,255,255,0.18);
+    background:
+      linear-gradient(135deg, rgba(82,202,204,0.10), rgba(82,95,204,0.10)),
+      var(--surface);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px; color: var(--text-dimmer); text-align: center; padding: 24px;
+  }
+  .shot-placeholder strong { color: var(--text-dim); font-weight: 600; }
+  .shot-placeholder code {
+    font-size: 0.82rem; background: rgba(0,0,0,0.35); padding: 3px 8px; border-radius: 6px;
+    color: var(--accent-cyan);
+  }
+
+  /* ---- Sections ---- */
+  section { padding: 56px 0; }
+  .section-title { font-size: 1.7rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 8px; text-align: center; }
+  .section-sub { text-align: center; color: var(--text-dim); margin-bottom: 36px; }
+
+  /* ---- Feature cards ---- */
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 24px;
+    transition: transform .15s ease, border-color .15s ease;
+  }
+  .card:hover { transform: translateY(-3px); border-color: rgba(255,255,255,0.16); }
+  .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-bottom: 14px; box-shadow: 0 0 16px currentColor; }
+  .card h3 { font-size: 1.1rem; margin-bottom: 8px; font-weight: 650; }
+  .card p { color: var(--text-dim); font-size: 0.95rem; }
+
+  /* ---- Install / Gatekeeper ---- */
+  .install { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px; }
+  .steps { list-style: none; counter-reset: step; display: grid; gap: 18px; }
+  .steps li { display: flex; gap: 16px; align-items: flex-start; }
+  .steps li::before {
+    counter-increment: step; content: counter(step);
+    flex: 0 0 30px; height: 30px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+    color: #fff; font-weight: 700; font-size: 0.9rem;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .steps li .body { padding-top: 2px; }
+  .steps strong { color: var(--text); }
+  .steps p { color: var(--text-dim); font-size: 0.96rem; }
+
+  .note {
+    margin-top: 24px; padding: 18px 20px;
+    background: rgba(204,104,82,0.10); border: 1px solid rgba(204,104,82,0.25);
+    border-radius: 12px; color: var(--text-dim); font-size: 0.95rem;
+  }
+  .note strong { color: var(--tile-1); }
+
+  pre {
+    margin-top: 14px; background: #0d0f15; border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; overflow-x: auto;
+  }
+  pre code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88rem; color: var(--accent-cyan); }
+
+  /* ---- Footer ---- */
+  footer {
+    border-top: 1px solid var(--border); margin-top: 40px;
+    padding: 36px 0 56px; text-align: center; color: var(--text-dimmer); font-size: 0.9rem;
+  }
+  footer a { color: var(--text-dim); text-decoration: none; }
+  footer a:hover { color: var(--text); }
+  .footer-links { display: flex; gap: 20px; justify-content: center; margin-bottom: 14px; }
+
+  @media (max-width: 600px) {
+    .nav-links { display: none; }
+    .hero { padding-top: 32px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand"><span class="mark"></span> Delve</div>
+    <nav class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/colingraydon/Delve">GitHub</a>
+    </nav>
+  </header>
+
+  <!-- HERO -->
+  <div class="hero">
+    <h1>See what's eating <br><span class="grad">your disk space.</span></h1>
+    <p class="lead">
+      Delve scans a drive or folder and draws what's using your space as an
+      interactive treemap, where bigger files make bigger tiles, so the space
+      hogs are obvious at a glance. Free and open source.
+    </p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/colingraydon/Delve/releases/latest/download/Delve.dmg">
+        Download for macOS
+        <span class="sub">.dmg · Apple Silicon &amp; Intel</span>
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/colingraydon/Delve">View on GitHub</a>
+    </div>
+    <p class="meta-line">Requires macOS 14 (Sonoma) or later · Unsigned build, see install steps below</p>
+  </div>
+
+  <!-- SCREENSHOT -->
+  <div class="shot-wrap">
+    <!-- Drop a screenshot at docs/screenshot.png and it replaces this placeholder. -->
+    <img class="shot" src="screenshot.png" alt="Delve treemap view"
+         onerror="this.style.display='none'; document.getElementById('shot-ph').style.display='flex';" />
+    <div class="shot-placeholder" id="shot-ph" style="display:none;">
+      <strong>Screenshot goes here</strong>
+      <span>Add an image at <code>docs/screenshot.png</code> to show off the app.</span>
+    </div>
+  </div>
+
+  <!-- FEATURES -->
+  <section id="features">
+    <h2 class="section-title">Built to find the big stuff, fast</h2>
+    <p class="section-sub">Free, open software for finding the big stuff fast.</p>
+    <div class="features">
+      <div class="card">
+        <span class="dot" style="color: var(--tile-5); background: var(--tile-5);"></span>
+        <h3>Treemap view</h3>
+        <p>Every file and folder is a tile sized by the space it uses, in distinct colors so neighbors are easy to tell apart.</p>
+      </div>
+      <div class="card">
+        <span class="dot" style="color: var(--tile-2); background: var(--tile-2);"></span>
+        <h3>Drill down</h3>
+        <p>Click a folder tile to zoom in, then use the breadcrumbs or back button to step right back out.</p>
+      </div>
+      <div class="card">
+        <span class="dot" style="color: var(--tile-3); background: var(--tile-3);"></span>
+        <h3>Sidebar breakdown</h3>
+        <p>The current folder's contents listed largest-first, with sizes and color dots that match the map.</p>
+      </div>
+      <div class="card">
+        <span class="dot" style="color: var(--tile-1); background: var(--tile-1);"></span>
+        <h3>Trash collector</h3>
+        <p>Drag tiles onto the trash can, review the queue, then Move All to Trash, with a 5-second countdown and Undo.</p>
+      </div>
+      <div class="card">
+        <span class="dot" style="color: var(--tile-4); background: var(--tile-4);"></span>
+        <h3>Safety first</h3>
+        <p>Delve refuses to trash system locations, your home folder, and media libraries. Nothing is ever permanently deleted.</p>
+      </div>
+      <div class="card">
+        <span class="dot" style="color: var(--accent-cyan); background: var(--accent-cyan);"></span>
+        <h3>Free &amp; open source</h3>
+        <p>MIT licensed, written in Swift &amp; SwiftUI. Build it yourself or browse every line on GitHub.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- INSTALL -->
+  <section id="install">
+    <h2 class="section-title">Installing</h2>
+    <p class="section-sub">It's an unsigned build, so the first launch takes one extra click.</p>
+    <div class="install">
+      <ol class="steps">
+        <li>
+          <div class="body">
+            <strong>Download &amp; open the DMG.</strong>
+            <p>Grab the latest <code>Delve.dmg</code> above, then drag <strong>Delve</strong> into your <strong>Applications</strong> folder.</p>
+          </div>
+        </li>
+        <li>
+          <div class="body">
+            <strong>Right-click to open the first time.</strong>
+            <p><strong>Right-click</strong> (or Control-click) Delve in Applications, choose <strong>Open</strong>, then click <strong>Open</strong> again. You only need to do this once.</p>
+          </div>
+        </li>
+        <li>
+          <div class="body">
+            <strong>Grant Full Disk Access (optional).</strong>
+            <p>For a complete scan of your startup disk, allow Delve under <strong>System Settings → Privacy &amp; Security → Full Disk Access</strong>.</p>
+          </div>
+        </li>
+      </ol>
+
+      <div class="note">
+        <strong>Why the warning?</strong> These builds aren't signed with an Apple Developer ID or
+        notarized (that needs a paid Apple account), so Gatekeeper warns that
+        <em>"Apple cannot check it for malicious software."</em> That's expected. If right-click → Open
+        doesn't work, clear the quarantine flag from Terminal:
+        <pre><code>xattr -dr com.apple.quarantine /Applications/Delve.app</code></pre>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="footer-links">
+    <a href="https://github.com/colingraydon/Delve">GitHub</a>
+    <a href="https://github.com/colingraydon/Delve/releases/latest">Releases</a>
+    <a href="https://github.com/colingraydon/Delve/blob/main/LICENSE">MIT License</a>
+  </div>
+  Delve · © Colin Graydon · A free, open-source disk visualizer for macOS
+</footer>
+</body>
+</html>
