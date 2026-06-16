@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Delve: A free disk space visualizer for macOS</title>
+<link rel="icon" type="image/png" href="favicon.png" />
 <meta name="description" content="Delve scans your Mac and draws what's using your space as an interactive treemap. Free and open source." />
 
 <!-- Open Graph / social preview -->
@@ -60,9 +61,8 @@
   }
   .brand { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 1.25rem; letter-spacing: -0.01em; }
   .brand .mark {
-    width: 30px; height: 30px; border-radius: 9px;
-    background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
-    box-shadow: 0 4px 14px rgba(10,132,255,0.4);
+    width: 32px; height: 32px; border-radius: 9px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.4);
   }
   .nav-links { display: flex; gap: 22px; align-items: center; }
   .nav-links a { color: var(--text-dim); text-decoration: none; font-size: 0.95rem; font-weight: 500; transition: color .15s; }
@@ -194,7 +194,7 @@
 <div class="wrap">
 
   <header>
-    <div class="brand"><span class="mark"></span> Delve</div>
+    <div class="brand"><img class="mark" src="icon.png" alt="Delve icon" /> Delve</div>
     <nav class="nav-links">
       <a href="#features">Features</a>
       <a href="#install">Install</a>
